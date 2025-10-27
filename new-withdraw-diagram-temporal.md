@@ -22,19 +22,19 @@ sequenceDiagram
     Note over Client,DW: PHASE 1: WITHDRAW INITIATION
     end
     
-    Client->>+Controller: POST /withdraw/temporal/initiate
+    Client->>Controller: POST /withdraw/temporal/initiate
     Note right of Client: WithdrawInitiationRequestDTO<br/>(amount, product, currency)
     
-    Controller->>+Service: initiateWithdraw(request)
+    Controller->>Service: initiateWithdraw(request)
     Service->>Service: Get user context from session
     Service->>Service: Generate workflowId<br/>(withdraw-{userId}-{timestamp})
     
-    Service->>+WFClient: newWorkflowStub(WithdrawWorkflow.class, options)
-    WFClient-->>-Service: workflow stub
+    Service->>WFClient: newWorkflowStub(WithdrawWorkflow.class, options)
+    WFClient-->>Service: workflow stub
     
-    Service->>+WFClient: WorkflowClient.start(workflow::executeWithdraw)
-    WFClient->>+Temporal: Start workflow execution
-    Temporal->>+Workflow: executeWithdraw(request, userId, dwAccountId)
+    Service->>WFClient: WorkflowClient.start(workflow::executeWithdraw)
+    WFClient->>Temporal: Start workflow execution
+    Temporal->>Workflow: executeWithdraw(request, userId, dwAccountId)
     
     Note over Workflow: State: INITIALIZED → INITIATING
     
@@ -44,19 +44,19 @@ sequenceDiagram
     
     Workflow->>Workflow: Generate correlationId (UUID)
     
-    Workflow->>+Activities: createWithdrawDbLog(request, userId, correlationId)
-    Activities->>+DB: INSERT INTO investment_withdraw
-    DB-->>-Activities: Success
-    Activities->>+DB: INSERT INTO investment_withdraw_history
-    DB-->>-Activities: Success
-    Activities-->>-Workflow: correlationId
+    Workflow->>Activities: createWithdrawDbLog(request, userId, correlationId)
+    Activities->>DB: INSERT INTO investment_withdraw
+    DB-->>Activities: Success
+    Activities->>DB: INSERT INTO investment_withdraw_history
+    DB-->>Activities: Success
+    Activities-->>Workflow: correlationId
     
-    Workflow->>+Activities: checkWithdrawRestrictions(userId)
-    Activities->>+Redis: exists(WITHDRAW_LOCK_PREFIX:{userId})
-    Redis-->>-Activities: false
-    Activities->>+DB: Check pending/failed withdraws
-    DB-->>-Activities: No restrictions
-    Activities-->>-Workflow: isRestricted = false
+    Workflow->>Activities: checkWithdrawRestrictions(userId)
+    Activities->>Redis: exists(WITHDRAW_LOCK_PREFIX:{userId})
+    Redis-->>Activities: false
+    Activities->>DB: Check pending/failed withdraws
+    DB-->>Activities: No restrictions
+    Activities-->>Workflow: isRestricted = false
     
     alt User is restricted
         Workflow->>Workflow: State: INITIATION_FAILED
@@ -67,9 +67,9 @@ sequenceDiagram
         Controller-->>Client: 400 Error - User restricted
     end
     
-    Workflow->>+Activities: callTransferServiceInitiate(request, correlationId)
+    Workflow->>Activities: callTransferServiceInitiate(request, correlationId)
     Activities->>Activities: Build transfer request
-    Activities->>+Transfer: POST /transfer/initiate
+    Activities->>Transfer: POST /transfer/initiate
     
     alt Transfer Service Timeout
         Transfer--xActivities: Timeout (after retries)
@@ -80,50 +80,50 @@ sequenceDiagram
         Activities->>DB: Update status: TRANSFER_FINALIZATION_FAILED
     end
     
-    Transfer-->>-Activities: AuthorisationDTO<br/>(authorisationId, otpRequired, commission)
-    Activities-->>-Workflow: AuthorisationDTO
+    Transfer-->>Activities: AuthorisationDTO<br/>(authorisationId, otpRequired, commission)
+    Activities-->>Workflow: AuthorisationDTO
     
-    Workflow->>+Activities: saveWithdrawLog(correlationId, "INITIAL")
-    Activities->>+DB: UPDATE investment_withdraw<br/>SET internal_status = 'INITIAL'
-    DB-->>-Activities: Success
-    Activities->>+DB: INSERT INTO history
-    DB-->>-Activities: Success
-    Activities-->>-Workflow: Success
+    Workflow->>Activities: saveWithdrawLog(correlationId, "INITIAL")
+    Activities->>DB: UPDATE investment_withdraw<br/>SET internal_status = 'INITIAL'
+    DB-->>Activities: Success
+    Activities->>DB: INSERT INTO history
+    DB-->>Activities: Success
+    Activities-->>Workflow: Success
     
     Note over Workflow: State: INITIATING → INITIATED
     Workflow->>Workflow: Store initiateResponse
-    Workflow-->>-Temporal: Continue (await signal)
+    Workflow-->>Temporal: Continue (await signal)
     
     Note over Temporal: Workflow persisted and waiting
-    Temporal-->>-WFClient: Workflow started
-    WFClient-->>-Service: Workflow started
+    Temporal-->>WFClient: Workflow started
+    WFClient-->>Service: Workflow started
     
     Service->>Service: Poll workflow.getCurrentState()<br/>(max 30 seconds)
     
     loop Poll until state changes
-        Service->>+WFClient: workflow.getCurrentState()
-        WFClient->>+Temporal: Query workflow
-        Temporal->>+Workflow: getCurrentState()
-        Workflow-->>-Temporal: "WAITING_FINALIZATION"
-        Temporal-->>-WFClient: State
-        WFClient-->>-Service: State
+        Service->>WFClient: workflow.getCurrentState()
+        WFClient->>Temporal: Query workflow
+        Temporal->>Workflow: getCurrentState()
+        Workflow-->>Temporal: "WAITING_FINALIZATION"
+        Temporal-->>WFClient: State
+        WFClient-->>Service: State
         Note over Service: State reached, exit loop
     end
     
-    Service->>+WFClient: workflow.getInitiateResponse()
-    WFClient->>+Temporal: Query workflow
-    Temporal->>+Workflow: getInitiateResponse()
-    Workflow-->>-Temporal: WithdrawInitiateResponse
-    Temporal-->>-WFClient: Response
-    WFClient-->>-Service: Response
+    Service->>WFClient: workflow.getInitiateResponse()
+    WFClient->>Temporal: Query workflow
+    Temporal->>Workflow: getInitiateResponse()
+    Workflow-->>Temporal: WithdrawInitiateResponse
+    Temporal-->>WFClient: Response
+    WFClient-->>Service: Response
     
-    Service->>+Redis: storeMapping(correlationId, workflowId)
-    Redis-->>-Service: Success
+    Service->>Redis: storeMapping(correlationId, workflowId)
+    Redis-->>Service: Success
     Note right of Redis: Key: temporal:workflow:mapping:{correlationId}<br/>Value: {workflowId}<br/>TTL: 48 hours
     
     Service->>Service: Build AuthorisationDTO<br/>with correlationId
-    Service-->>-Controller: ResponseDTO<AuthorisationDTO>
-    Controller-->>-Client: 200 OK<br/>AuthorisationDTO (authorisationId, correlationId)
+    Service-->>Controller: ResponseDTO<AuthorisationDTO>
+    Controller-->>Client: 200 OK<br/>AuthorisationDTO (authorisationId, correlationId)
     
     rect rgb(255, 240, 200)
     Note over Client,DW: PHASE 2: WAITING FOR USER AUTHORIZATION (up to 20 seconds)
@@ -137,12 +137,12 @@ sequenceDiagram
     alt Timeout occurs (20 seconds)
         Note over Workflow: finalizeRequest is still null
         Workflow->>Workflow: State: FINALIZATION_TIMEOUT
-        Workflow->>+Activities: saveWithdrawLog(correlationId, "TRANSFER_FINALIZATION_TIMEOUT")
+        Workflow->>Activities: saveWithdrawLog(correlationId, "TRANSFER_FINALIZATION_TIMEOUT")
         Activities->>DB: Update status
-        Activities-->>-Workflow: Success
-        Workflow->>+Activities: rollbackWithdraw(correlationId)
+        Activities-->>Workflow: Success
+        Workflow->>Activities: rollbackWithdraw(correlationId)
         Activities->>DB: Update status: TRANSFER_FINALIZATION_FAILED
-        Activities-->>-Workflow: Success
+        Activities-->>Workflow: Success
         Workflow-->>Temporal: Return failure response<br/>(timeout error)
         Note over Temporal: Workflow completed with timeout
     end
@@ -151,39 +151,39 @@ sequenceDiagram
     Note over Client,DW: PHASE 3: WITHDRAW FINALIZATION
     end
     
-    Client->>+Controller: PUT /withdraw/temporal/finalize/{authId}/{correlationId}
+    Client->>Controller: PUT /withdraw/temporal/finalize/{authId}/{correlationId}
     Note right of Client: TransferAuthoriseDTO<br/>(optional)
     
-    Controller->>+Service: finalizeWithdraw(authId, correlationId, authDTO)
+    Controller->>Service: finalizeWithdraw(authId, correlationId, authDTO)
     Service->>Service: Get user context
     
-    Service->>+Redis: getWorkflowId(correlationId)
-    Redis-->>-Service: workflowId
+    Service->>Redis: getWorkflowId(correlationId)
+    Redis-->>Service: workflowId
     
     alt Workflow not found
         Service-->>Controller: Throw RuntimeException<br/>"Workflow not found"
         Controller-->>Client: 404 Error
     end
     
-    Service->>+WFClient: newWorkflowStub(WithdrawWorkflow.class, workflowId)
-    WFClient-->>-Service: workflow stub
+    Service->>WFClient: newWorkflowStub(WithdrawWorkflow.class, workflowId)
+    WFClient-->>Service: workflow stub
     
-    Service->>+WFClient: workflow.getCurrentState()
-    WFClient->>+Temporal: Query state
-    Temporal->>+Workflow: getCurrentState()
-    Workflow-->>-Temporal: "WAITING_FINALIZATION"
-    Temporal-->>-WFClient: State
-    WFClient-->>-Service: "WAITING_FINALIZATION"
+    Service->>WFClient: workflow.getCurrentState()
+    WFClient->>Temporal: Query state
+    Temporal->>Workflow: getCurrentState()
+    Workflow-->>Temporal: "WAITING_FINALIZATION"
+    Temporal-->>WFClient: State
+    WFClient-->>Service: "WAITING_FINALIZATION"
     
     Service->>Service: Build WithdrawFinalizeRequest
-    Service->>+WFClient: workflow.finalizeWithdraw(finalizeRequest)
-    WFClient->>+Temporal: Send signal to workflow
-    Temporal->>+Workflow: finalizeWithdraw(request) [SIGNAL]
+    Service->>WFClient: workflow.finalizeWithdraw(finalizeRequest)
+    WFClient->>Temporal: Send signal to workflow
+    Temporal->>Workflow: finalizeWithdraw(request) [SIGNAL]
     Workflow->>Workflow: Set finalizeRequest = request
     Note over Workflow: Signal received!<br/>await() condition satisfied
-    Workflow-->>-Temporal: Signal processed
-    Temporal-->>-WFClient: Signal sent
-    WFClient-->>-Service: Signal sent
+    Workflow-->>Temporal: Signal processed
+    Temporal-->>WFClient: Signal sent
+    WFClient-->>Service: Signal sent
     
     Note over Workflow: Await unblocked, continue execution
     Note over Workflow: State: WAITING_FINALIZATION → FINALIZING
@@ -192,18 +192,18 @@ sequenceDiagram
     Note over Workflow,DW: FINALIZATION ACTIVITIES
     end
     
-    Workflow->>+Activities: lockWithdraw(correlationId)
-    Activities->>+DB: Find withdraw by correlationId
-    DB-->>-Activities: InvestmentWithdraw
-    Activities->>+Redis: SET lock key<br/>(WITHDRAW_LOCK_PREFIX:{dwAccountId})
-    Redis-->>-Activities: Success
-    Activities-->>-Workflow: Success
+    Workflow->>Activities: lockWithdraw(correlationId)
+    Activities->>DB: Find withdraw by correlationId
+    DB-->>Activities: InvestmentWithdraw
+    Activities->>Redis: SET lock key<br/>(WITHDRAW_LOCK_PREFIX:{dwAccountId})
+    Redis-->>Activities: Success
+    Activities-->>Workflow: Success
     
-    Workflow->>+Activities: finalizeTransfer(finalizeRequest)
-    Activities->>+DB: Find withdraw by correlationId
-    DB-->>-Activities: InvestmentWithdraw
+    Workflow->>Activities: finalizeTransfer(finalizeRequest)
+    Activities->>DB: Find withdraw by correlationId
+    DB-->>Activities: InvestmentWithdraw
     
-    Activities->>+Transfer: POST /transfer/finalize/{authId}
+    Activities->>Transfer: POST /transfer/finalize/{authId}
     Note right of Activities: Include authorization details
     
     alt Transfer Finalization Failed
@@ -217,16 +217,16 @@ sequenceDiagram
         Workflow-->>Temporal: Return failure response
     end
     
-    Transfer-->>-Activities: TransferReceiptDTO<br/>(success, referenceNumber, etc.)
-    Activities->>+DB: UPDATE withdraw<br/>(transferDate, referenceNumber, etc.)
-    DB-->>-Activities: Success
-    Activities->>+DB: INSERT INTO history
-    DB-->>-Activities: Success
-    Activities-->>-Workflow: true
+    Transfer-->>Activities: TransferReceiptDTO<br/>(success, referenceNumber, etc.)
+    Activities->>DB: UPDATE withdraw<br/>(transferDate, referenceNumber, etc.)
+    DB-->>Activities: Success
+    Activities->>DB: INSERT INTO history
+    DB-->>Activities: Success
+    Activities-->>Workflow: true
     
-    Workflow->>+Activities: getDriveWealthToken(correlationId)
-    Activities->>+DB: Find withdraw by correlationId
-    DB-->>-Activities: InvestmentWithdraw
+    Workflow->>Activities: getDriveWealthToken(correlationId)
+    Activities->>DB: Find withdraw by correlationId
+    DB-->>Activities: InvestmentWithdraw
     Activities->>Activities: authorizationService.getAuthorizationToken()
     
     alt DW Authorization Timeout
@@ -236,13 +236,13 @@ sequenceDiagram
         Workflow->>Activities: unlockWithdraw(correlationId)
     end
     
-    Activities-->>-Workflow: dwToken
+    Activities-->>Workflow: dwToken
     
-    Workflow->>+Activities: createDriveWealthWithdraw(correlationId, token)
-    Activities->>+DB: Find withdraw by correlationId
-    DB-->>-Activities: InvestmentWithdraw
+    Workflow->>Activities: createDriveWealthWithdraw(correlationId, token)
+    Activities->>DB: Find withdraw by correlationId
+    DB-->>Activities: InvestmentWithdraw
     Activities->>Activities: Build DriveWealthWithdrawRequestDto
-    Activities->>+DW: POST /accounts/{accountNo}/withdrawals
+    Activities->>DW: POST /accounts/{accountNo}/withdrawals
     Note right of Activities: Authorization: Bearer {token}
     
     alt DW API Unauthorized (401)
@@ -260,47 +260,47 @@ sequenceDiagram
         Workflow->>Activities: unlockWithdraw(correlationId)
     end
     
-    DW-->>-Activities: DriveWealthWithdrawResponseDto<br/>(id, status, paymentRef)
-    Activities->>+DB: UPDATE withdraw<br/>(dwWithdrawId, dwStatus, etc.)
-    DB-->>-Activities: Success
-    Activities->>+DB: INSERT INTO history
-    DB-->>-Activities: Success
-    Activities-->>-Workflow: Success
+    DW-->>Activities: DriveWealthWithdrawResponseDto<br/>(id, status, paymentRef)
+    Activities->>DB: UPDATE withdraw<br/>(dwWithdrawId, dwStatus, etc.)
+    DB-->>Activities: Success
+    Activities->>DB: INSERT INTO history
+    DB-->>Activities: Success
+    Activities-->>Workflow: Success
     
-    Workflow->>+Activities: saveWithdrawLog(correlationId, "WITHDRAW_SUCCESS")
-    Activities->>+DB: UPDATE investment_withdraw<br/>SET internal_status = 'WITHDRAW_SUCCESS'
-    DB-->>-Activities: Success
-    Activities->>+DB: INSERT INTO history
-    DB-->>-Activities: Success
-    Activities-->>-Workflow: Success
+    Workflow->>Activities: saveWithdrawLog(correlationId, "WITHDRAW_SUCCESS")
+    Activities->>DB: UPDATE investment_withdraw<br/>SET internal_status = 'WITHDRAW_SUCCESS'
+    DB-->>Activities: Success
+    Activities->>DB: INSERT INTO history
+    DB-->>Activities: Success
+    Activities-->>Workflow: Success
     
     Note over Workflow: State: FINALIZING → FINALIZED
     
-    Workflow->>+Activities: unlockWithdraw(correlationId)
-    Activities->>+Redis: DELETE lock key
-    Redis-->>-Activities: Success
-    Activities-->>-Workflow: Success
+    Workflow->>Activities: unlockWithdraw(correlationId)
+    Activities->>Redis: DELETE lock key
+    Redis-->>Activities: Success
+    Activities-->>Workflow: Success
     
-    Workflow->>+Activities: notifyWithdrawStatus(correlationId, "SUCCESS", userId)
+    Workflow->>Activities: notifyWithdrawStatus(correlationId, "SUCCESS", userId)
     Note right of Activities: Send notifications (email, SMS, push)<br/>Best effort - errors don't fail workflow
-    Activities-->>-Workflow: Success
+    Activities-->>Workflow: Success
     
     Workflow->>Workflow: Build WithdrawFinalizeResponse<br/>(success=true, receipt)
-    Workflow-->>-Temporal: WithdrawFinalizeResponse
+    Workflow-->>Temporal: WithdrawFinalizeResponse
     
     Note over Temporal: Workflow completed successfully
     
-    Service->>+WFClient: untypedStub.getResult()
+    Service->>WFClient: untypedStub.getResult()
     Note right of Service: Wait for workflow completion
-    WFClient->>+Temporal: Get workflow result
-    Temporal-->>-WFClient: WithdrawFinalizeResponse
-    WFClient-->>-Service: Response
+    WFClient->>Temporal: Get workflow result
+    Temporal-->>WFClient: WithdrawFinalizeResponse
+    WFClient-->>Service: Response
     
     Service->>Service: Extract receipt from response
-    Service-->>-Controller: InvestmentReceiptDTO
+    Service-->>Controller: InvestmentReceiptDTO
     
     Controller->>Controller: Build ResponseDTO
-    Controller-->>-Client: 200 OK<br/>InvestmentReceiptDTO (receipt details)
+    Controller-->>Client: 200 OK<br/>InvestmentReceiptDTO (receipt details)
     
     rect rgb(255, 200, 200)
     Note over Client,DW: ERROR HANDLING & COMPENSATION
@@ -476,6 +476,60 @@ graph LR
     style D1 fill:#fff3cd
 ```
 
+## Simplified Flow Diagram (High-Level)
+
+```mermaid
+flowchart TD
+    Start([Client: POST /initiate]) --> Init[Initiate Workflow]
+    
+    Init --> CreateDB[Create DB Log]
+    CreateDB --> CheckRestrict{Check Restrictions}
+    
+    CheckRestrict -->|Restricted| FailInit[Return Error]
+    CheckRestrict -->|Not Restricted| CallTransfer[Call Transfer Service]
+    
+    CallTransfer -->|Success| SaveLog[Save Initial Log]
+    CallTransfer -->|Timeout| FailTransfer[Mark Failed & Rollback]
+    
+    SaveLog --> StoreRedis[Store Workflow ID in Redis]
+    StoreRedis --> ReturnAuth[Return AuthorisationDTO]
+    
+    ReturnAuth --> WaitSignal{Wait for Signal<br/>20 seconds}
+    
+    WaitSignal -->|Timeout| Timeout[Mark Timeout & Rollback]
+    WaitSignal -->|Signal Received| Lock[Lock Withdraw]
+    
+    Lock --> Finalize[Finalize Transfer]
+    Finalize -->|Failed| FailFinal[Mark Failed & Rollback]
+    Finalize -->|Success| GetToken[Get DW Token]
+    
+    GetToken -->|Failed| FailToken[Mark Failed & Rollback]
+    GetToken -->|Success| CreateDW[Create DW Withdrawal]
+    
+    CreateDW -->|Failed| FailDW[Mark Failed & Rollback]
+    CreateDW -->|Success| SaveSuccess[Save Success Status]
+    
+    SaveSuccess --> Unlock[Unlock Withdraw]
+    Unlock --> Notify[Send Notification]
+    Notify --> Success[Return Receipt]
+    
+    FailInit --> End([End])
+    FailTransfer --> End
+    Timeout --> End
+    FailFinal --> End
+    FailToken --> End
+    FailDW --> End
+    Success --> End
+    
+    style Init fill:#d1ecf1
+    style SaveLog fill:#d4edda
+    style WaitSignal fill:#fff3cd
+    style Success fill:#d4edda
+    style FailInit fill:#f8d7da
+    style Timeout fill:#f8d7da
+    style FailFinal fill:#f8d7da
+```
+
 ## Redis Keys Structure
 
 ```mermaid
@@ -556,3 +610,41 @@ erDiagram
 - **Redis Mapping TTL**: 48 hours
 - **Withdraw Lock TTL**: Configurable (seconds)
 
+## Flow Summary
+
+### Phase 1: Initiation
+1. Client calls POST /withdraw/temporal/initiate
+2. Workflow starts and generates correlationId
+3. Create DB log entry
+4. Check user restrictions (Redis + DB)
+5. Call Transfer Service to initiate transfer
+6. Save initial status to DB
+7. Store mapping (correlationId → workflowId) in Redis
+8. Return AuthorisationDTO to client
+
+### Phase 2: Waiting
+1. Workflow enters WAITING_FINALIZATION state
+2. Temporal persists workflow state
+3. Await signal with 20-second timeout
+4. If timeout: mark failed, rollback, end
+5. If signal received: continue to finalization
+
+### Phase 3: Finalization
+1. Client calls PUT /withdraw/temporal/finalize
+2. Find workflow using correlationId from Redis
+3. Send signal to workflow
+4. Lock withdraw in Redis
+5. Finalize transfer with Transfer Service
+6. Get DriveWealth authorization token
+7. Create withdrawal in DriveWealth
+8. Save success status to DB
+9. Unlock withdraw
+10. Send notifications (best effort)
+11. Return receipt to client
+
+### Error Handling
+- All activities have retry policies with exponential backoff
+- Timeouts trigger automatic rollback
+- Workflow state preserved across app restarts
+- Compensation logic executes on failures
+- Non-critical operations (notifications) don't fail workflow
